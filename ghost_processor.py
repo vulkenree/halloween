@@ -136,8 +136,8 @@ def process_video(input_path: str, output_path: str, rotate: bool = True, motion
     
     # Initialize motion blur frame buffer if enabled
     frame_buffer = [] if motion_blur else None
-    buffer_size = 4 if motion_blur else 0
-    blur_kernel_size = 21  # Gaussian blur kernel size (must be odd)
+    buffer_size = 2 if motion_blur else 0
+    blur_kernel_size = 33  # Gaussian blur kernel size (must be odd)
     
     print(f"Processing video: {input_path}")
     print(f"Resolution: {width}x{height}, FPS: {fps}, Total frames: {total_frames}")
