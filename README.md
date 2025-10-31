@@ -1,13 +1,15 @@
-# Halloween Ghost Video Processor
+# Stick Figure Video Processor
 
-A Python-based video processing system that detects people in video frames, extracts them, and creates ghost effect versions with lagged/shadow projections for Halloween displays.
+A Python-based video processing system that detects people in video frames using MediaPipe pose detection and converts them into black and white stick figure animations.
 
 ## Features
 
-- Real-time person detection and segmentation using MediaPipe
-- Configurable ghost effects (transparency, color tinting, outline)
-- Lagged shadow effects with configurable frame delays
-- Process pre-recorded videos or live camera feeds (future)
+- Real-time pose detection using MediaPipe
+- Black and white stick figure rendering from detected poses
+- Optional 90-degree clockwise rotation (enabled by default)
+- Optional motion blur with glow effect for enhanced visual appeal
+- Frame sampling for faster processing (process fewer frames to speed up)
+- Performance metrics and progress reporting
 
 ## Setup
 
@@ -43,9 +45,9 @@ This project uses [uv](https://github.com/astral-sh/uv) for package management.
 
 Place your test video files in the `test_videos/` directory (or any location of your choice). Supported formats include `.mp4`, `.mov`, `.avi`, `.mkv`, and other formats supported by OpenCV.
 
-### Processing a Video
+### Basic Processing
 
-Process a pre-recorded video:
+Process a video to create a stick figure animation:
 
 ```bash
 uv run python main.py --input test_videos/your_video.mp4 --output test_videos/output.mp4
@@ -67,20 +69,51 @@ uv run python main.py -i /path/to/input.mp4 -o /path/to/output.mp4
 
 - `--input` / `-i`: Path to input video file (required)
 - `--output` / `-o`: Path to output video file (required)
-- `--transparency` / `-t`: Ghost transparency level (0.0-1.0, default: 0.5)
-- `--lag-frames` / `-l`: Number of frames delay for shadow effect (default: 30)
-- `--ghost-color`: RGB color for ghost effect (default: white/transparent)
+- `--no-rotate`: Disable rotation (rotation is enabled by default - rotates output 90° clockwise)
+- `--motion-blur`: Enable motion blur with glow effect for stick figures
+- `--frame-sampling`: Frame sampling rate (0.0-1.0, default: 1.0)
+  - `1.0` = Process all frames (no downsampling)
+  - `0.5` = Process 50% of frames (every 2nd frame) - ~2x faster
+  - `0.25` = Process 25% of frames (every 4th frame) - ~4x faster
+
+### Usage Examples
+
+**Process with all default settings (rotation enabled, all frames):**
+```bash
+uv run python main.py -i input.mp4 -o output.mp4
+```
+
+**Process without rotation:**
+```bash
+uv run python main.py -i input.mp4 -o output.mp4 --no-rotate
+```
+
+**Process with motion blur effect:**
+```bash
+uv run python main.py -i input.mp4 -o output.mp4 --motion-blur
+```
+
+**Process faster by sampling 50% of frames:**
+```bash
+uv run python main.py -i input.mp4 -o output.mp4 --frame-sampling 0.5
+```
+
+**Combine multiple options:**
+```bash
+uv run python main.py -i input.mp4 -o output.mp4 --motion-blur --frame-sampling 0.25 --no-rotate
+```
 
 ## Project Structure
 
 - `main.py` - Main entry point and command-line interface
-- `ghost_processor.py` - Core processing module with person detection and ghost effects
+- `ghost_processor.py` - Core processing module with pose detection and stick figure rendering
 - `pyproject.toml` - Project configuration and dependencies
 - `test_videos/` - Directory for test video files (you can place your videos here)
 
-## Future Phases
+## Output
 
-- Phase 2: Live camera integration
-- Phase 3: Real-time projection output
-- Phase 4: Advanced effects and optimizations
-
+The processed video will contain:
+- White stick figures on a black background
+- Same resolution as input (or rotated if rotation is enabled)
+- Adjusted frame rate if frame sampling is used (maintains correct timing)
+- Motion trails and glow effects if motion blur is enabled
