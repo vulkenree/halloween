@@ -41,14 +41,28 @@ def main():
         help='Enable motion blur with glow effect for stick figures'
     )
     
+    parser.add_argument(
+        '--frame-sampling',
+        dest='frame_sampling',
+        type=float,
+        default=1.0,
+        help='Frame sampling rate (0.0-1.0). 1.0 processes all frames, 0.5 processes half, etc. (default: 1.0)'
+    )
+    
     args = parser.parse_args()
+    
+    # Validate frame_sampling parameter
+    if not 0.0 < args.frame_sampling <= 1.0:
+        print(f"Error: --frame-sampling must be between 0.0 and 1.0, got {args.frame_sampling}", file=sys.stderr)
+        sys.exit(1)
     
     try:
         process_video(
             input_path=args.input,
             output_path=args.output,
             rotate=args.rotate,
-            motion_blur=args.motion_blur
+            motion_blur=args.motion_blur,
+            frame_sampling=args.frame_sampling
         )
     except Exception as e:
         print(f"Error processing video: {e}", file=sys.stderr)

@@ -96,7 +96,7 @@ class StickFigureRenderer:
         return output_frame
 
 
-def process_video(input_path: str, output_path: str, rotate: bool = True, motion_blur: bool = False) -> None:
+def process_video(input_path: str, output_path: str, rotate: bool = True, motion_blur: bool = False, frame_sampling: float = 1.0) -> None:
     """
     Main video processing pipeline - detects poses and renders stick figures.
     
@@ -105,6 +105,7 @@ def process_video(input_path: str, output_path: str, rotate: bool = True, motion
         output_path: Path to save output video
         rotate: If True, rotate output video 90 degrees clockwise (default: True)
         motion_blur: If True, apply motion blur with glow effect (default: False)
+        frame_sampling: Frame sampling rate (0.0-1.0). 1.0 processes all frames, 0.5 processes half, etc. (default: 1.0)
     """
     # Initialize components
     pose_detector = PoseDetection()
@@ -123,6 +124,19 @@ def process_video(input_path: str, output_path: str, rotate: bool = True, motion
     # Calculate input video length in seconds
     input_video_length = total_frames / fps if fps > 0 else 0
     
+    # Calculate frame sampling parameters
+    # Ensure frame_sampling is valid (between 0 and 1)
+    frame_sampling = max(0.01, min(1.0, frame_sampling))
+    skip_interval = max(1, int(1.0 / frame_sampling))
+    
+    # Calculate expected number of frames to process
+    expected_frames = int(total_frames / skip_interval)
+    
+    # Adjust output FPS proportionally to maintain correct timing
+    output_fps = int(fps * frame_sampling)
+    # Ensure minimum FPS of 1
+    output_fps = max(1, output_fps)
+    
     # Initialize stick figure renderer
     renderer = StickFigureRenderer(width, height)
     
@@ -130,9 +144,9 @@ def process_video(input_path: str, output_path: str, rotate: bool = True, motion
     output_width = height if rotate else width
     output_height = width if rotate else height
     
-    # Initialize video writer
+    # Initialize video writer with adjusted FPS
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (output_width, output_height))
+    out = cv2.VideoWriter(output_path, fourcc, output_fps, (output_width, output_height))
     
     # Initialize motion blur frame buffer if enabled
     frame_buffer = [] if motion_blur else None
@@ -142,6 +156,9 @@ def process_video(input_path: str, output_path: str, rotate: bool = True, motion
     print(f"Processing video: {input_path}")
     print(f"Resolution: {width}x{height}, FPS: {fps}, Total frames: {total_frames}")
     print(f"Input video length: {input_video_length:.2f} seconds")
+    if frame_sampling < 1.0:
+        print(f"Frame sampling: {frame_sampling:.2f} ({frame_sampling*100:.1f}% of frames, skipping every {skip_interval-1} frames)")
+        print(f"Expected output frames: {expected_frames}, Output FPS: {output_fps}")
     if rotate:
         print(f"Output will be rotated 90° clockwise: {output_width}x{output_height}")
     if motion_blur:
@@ -152,12 +169,18 @@ def process_video(input_path: str, output_path: str, rotate: bool = True, motion
     start_time = time.time()
     
     frame_count = 0
+    processed_frame_count = 0
     poses_detected = 0
     
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+        
+        # Skip frames based on sampling rate
+        if frame_count % skip_interval != 0:
+            frame_count += 1
+            continue
         
         # Detect pose
         pose_results = pose_detector.detect_pose(frame)
@@ -220,10 +243,12 @@ def process_video(input_path: str, output_path: str, rotate: bool = True, motion
         # Write output frame
         out.write(output_frame)
         
+        processed_frame_count += 1
         frame_count += 1
-        if frame_count % 30 == 0:
+        
+        if processed_frame_count % 30 == 0:
             progress = (frame_count / total_frames) * 100
-            print(f"Progress: {progress:.1f}% ({frame_count}/{total_frames} frames) - Poses detected: {poses_detected}")
+            print(f"Progress: {progress:.1f}% (processed {processed_frame_count}/{expected_frames} frames, total read {frame_count}/{total_frames}) - Poses detected: {poses_detected}")
     
     # End timing
     end_time = time.time()
@@ -238,7 +263,9 @@ def process_video(input_path: str, output_path: str, rotate: bool = True, motion
     fps_processing = total_frames / processing_time if processing_time > 0 else 0
     
     print(f"Processing complete! Output saved to: {output_path}")
-    print(f"Total poses detected: {poses_detected} out of {total_frames} frames")
+    if frame_sampling < 1.0:
+        print(f"Processed {processed_frame_count} frames out of {total_frames} total frames (sampling rate: {frame_sampling:.2f})")
+    print(f"Total poses detected: {poses_detected} out of {processed_frame_count} processed frames")
     print(f"Input video length: {input_video_length:.2f} seconds")
     print(f"Time to generate output video: {processing_time:.2f} seconds")
     print(f"Processing speed: {fps_processing:.2f} frames/second")
