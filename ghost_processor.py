@@ -881,6 +881,7 @@ def process_ghost_video(input_path: str, output_path: str) -> None:
     
     frame_count = 0
     poses_detected = 0
+    previous_stick_frame = None  # Frame buffer for trailing effect
     
     while True:
         ret, frame = cap.read()
@@ -899,15 +900,74 @@ def process_ghost_video(input_path: str, output_path: str) -> None:
         # Rotate stick figure frame (for output orientation)
         stick_frame_rotated = cv2.rotate(stick_frame, cv2.ROTATE_90_CLOCKWISE)
         
-        # Apply ghost effects to rotated frame
+        # Create trailing stick figure from previous frame (80% scale, blurred, glowing)
+        trailing_frame = None
+        if previous_stick_frame is not None:
+            # Scale previous frame's stick figure to 80%
+            prev_rotated = cv2.rotate(previous_stick_frame, cv2.ROTATE_90_CLOCKWISE)
+            h, w = prev_rotated.shape[:2]
+            new_h = int(h * 0.8)
+            new_w = int(w * 0.8)
+            
+            # Resize to 80%
+            trailing_scaled = cv2.resize(prev_rotated, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            
+            # Center it on the frame (or position it appropriately)
+            trailing_frame = np.zeros((rotated_height, rotated_width, 3), dtype=np.uint8)
+            y_offset = (rotated_height - new_h) // 2
+            x_offset = (rotated_width - new_w) // 2
+            trailing_frame[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = trailing_scaled
+        
+        # Update frame buffer for next iteration
+        previous_stick_frame = stick_frame.copy()
+        
+        # Create ghost frame (start with trailing figure if available)
+        ghost_frame = np.zeros((rotated_height, rotated_width, 3), dtype=np.uint8)
+        
+        # Process trailing stick figure first (behind main figure)
+        if trailing_frame is not None:
+            # Convert trailing frame to grayscale and create mask
+            trailing_gray = cv2.cvtColor(trailing_frame, cv2.COLOR_BGR2GRAY)
+            _, trailing_mask = cv2.threshold(trailing_gray, 1, 255, cv2.THRESH_BINARY)
+            
+            if np.any(trailing_mask):
+                # Apply heavy blur for trailing effect (2x the main glow intensity)
+                trailing_blur_intensity = glow_intensity * 2
+                trailing_blurred_mask = cv2.GaussianBlur(trailing_mask.astype(np.float32), 
+                                                        (trailing_blur_intensity * 2 + 1, trailing_blur_intensity * 2 + 1), 
+                                                        0) / 255.0
+                
+                # Apply additional blur passes for smoother effect
+                trailing_blurred_mask = cv2.GaussianBlur(trailing_blurred_mask, 
+                                                        (trailing_blur_intensity + 1, trailing_blur_intensity + 1), 
+                                                        0)
+                
+                # Create strong glow overlay for trailing figure
+                trailing_glow_overlay = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
+                for c in range(3):
+                    trailing_glow_overlay[:, :, c] = trailing_blurred_mask * ghost_color[c]
+                
+                # Add trailing glow (stronger than main, more transparent)
+                ghost_frame = ghost_frame.astype(np.float32) + trailing_glow_overlay * 0.8
+                
+                # Add semi-transparent filled trailing ghost
+                trailing_fill_mask = (trailing_mask.astype(np.float32) / 255.0)
+                trailing_fill_overlay = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
+                for c in range(3):
+                    trailing_fill_overlay[:, :, c] = trailing_fill_mask * ghost_color[c] * (fill_transparency * 0.6)
+                ghost_frame = ghost_frame + trailing_fill_overlay
+                
+                # Add faded outline for trailing figure
+                trailing_outline = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
+                trailing_outline[trailing_mask > 0] = [255, 255, 255]
+                ghost_frame = ghost_frame + trailing_outline * 0.2
+        
+        # Apply ghost effects to main rotated frame
         gray = cv2.cvtColor(stick_frame_rotated, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
         
-        # Create ghost frame
-        ghost_frame = np.zeros((rotated_height, rotated_width, 3), dtype=np.uint8)
-        
         if np.any(mask):
-            # Apply blur for glow
+            # Apply blur for glow (main figure)
             blurred_mask = cv2.GaussianBlur(mask.astype(np.float32), 
                                           (glow_intensity * 2 + 1, glow_intensity * 2 + 1), 
                                           0) / 255.0
@@ -917,6 +977,7 @@ def process_ghost_video(input_path: str, output_path: str) -> None:
             for c in range(3):
                 glow_overlay[:, :, c] = blurred_mask * ghost_color[c]
             
+            # Add main ghost glow on top of trailing figure
             ghost_frame = ghost_frame.astype(np.float32) + glow_overlay * 0.6
             
             # Add filled ghost
@@ -930,8 +991,9 @@ def process_ghost_video(input_path: str, output_path: str) -> None:
             white_outline = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
             white_outline[mask > 0] = [255, 255, 255]
             ghost_frame = ghost_frame + white_outline * 0.4
-            
-            ghost_frame = np.clip(ghost_frame, 0, 255).astype(np.uint8)
+        
+        # Ensure ghost_frame is uint8 before writing
+        ghost_frame = np.clip(ghost_frame, 0, 255).astype(np.uint8)
         
         out.write(ghost_frame)
         
