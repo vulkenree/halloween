@@ -96,13 +96,14 @@ class StickFigureRenderer:
         return output_frame
 
 
-def process_video(input_path: str, output_path: str) -> None:
+def process_video(input_path: str, output_path: str, rotate: bool = True) -> None:
     """
     Main video processing pipeline - detects poses and renders stick figures.
     
     Args:
         input_path: Path to input video file
         output_path: Path to save output video
+        rotate: If True, rotate output video 90 degrees clockwise (default: True)
     """
     # Initialize components
     pose_detector = PoseDetection()
@@ -124,13 +125,19 @@ def process_video(input_path: str, output_path: str) -> None:
     # Initialize stick figure renderer
     renderer = StickFigureRenderer(width, height)
     
+    # Determine output dimensions (swap if rotating)
+    output_width = height if rotate else width
+    output_height = width if rotate else height
+    
     # Initialize video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    out = cv2.VideoWriter(output_path, fourcc, fps, (output_width, output_height))
     
     print(f"Processing video: {input_path}")
     print(f"Resolution: {width}x{height}, FPS: {fps}, Total frames: {total_frames}")
     print(f"Input video length: {input_video_length:.2f} seconds")
+    if rotate:
+        print(f"Output will be rotated 90° clockwise: {output_width}x{output_height}")
     print("Rendering stick figures on black background...")
     
     # Start timing
@@ -152,6 +159,10 @@ def process_video(input_path: str, output_path: str) -> None:
         
         # Render stick figure on black background
         output_frame = renderer.render_stick_figure(pose_results)
+        
+        # Rotate frame if needed
+        if rotate:
+            output_frame = cv2.rotate(output_frame, cv2.ROTATE_90_CLOCKWISE)
         
         # Write output frame
         out.write(output_frame)

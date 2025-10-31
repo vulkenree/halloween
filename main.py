@@ -25,12 +25,21 @@ def main():
         help='Path to output video file'
     )
     
+    parser.add_argument(
+        '--no-rotate',
+        dest='rotate',
+        action='store_false',
+        default=True,
+        help='Disable rotation (rotation is enabled by default)'
+    )
+    
     args = parser.parse_args()
     
     try:
         process_video(
             input_path=args.input,
-            output_path=args.output
+            output_path=args.output,
+            rotate=args.rotate
         )
     except Exception as e:
         print(f"Error processing video: {e}", file=sys.stderr)
