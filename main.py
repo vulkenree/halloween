@@ -56,7 +56,7 @@ def main():
             # Ghost mode (default)
             process_ghost_video(
                 input_path=args.input,
-                output_path=a   rgs.output
+                output_path=args.output
             )
     except Exception as e:
         print(f"Error processing video: {e}", file=sys.stderr)
