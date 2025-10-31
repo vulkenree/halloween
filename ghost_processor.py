@@ -96,7 +96,7 @@ class StickFigureRenderer:
         return output_frame
 
 
-def process_video(input_path: str, output_path: str, rotate: bool = True) -> None:
+def process_video(input_path: str, output_path: str, rotate: bool = True, motion_blur: bool = False) -> None:
     """
     Main video processing pipeline - detects poses and renders stick figures.
     
@@ -104,6 +104,7 @@ def process_video(input_path: str, output_path: str, rotate: bool = True) -> Non
         input_path: Path to input video file
         output_path: Path to save output video
         rotate: If True, rotate output video 90 degrees clockwise (default: True)
+        motion_blur: If True, apply motion blur with glow effect (default: False)
     """
     # Initialize components
     pose_detector = PoseDetection()
@@ -133,11 +134,18 @@ def process_video(input_path: str, output_path: str, rotate: bool = True) -> Non
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (output_width, output_height))
     
+    # Initialize motion blur frame buffer if enabled
+    frame_buffer = [] if motion_blur else None
+    buffer_size = 4 if motion_blur else 0
+    blur_kernel_size = 21  # Gaussian blur kernel size (must be odd)
+    
     print(f"Processing video: {input_path}")
     print(f"Resolution: {width}x{height}, FPS: {fps}, Total frames: {total_frames}")
     print(f"Input video length: {input_video_length:.2f} seconds")
     if rotate:
         print(f"Output will be rotated 90° clockwise: {output_width}x{output_height}")
+    if motion_blur:
+        print("Motion blur with glow effect enabled")
     print("Rendering stick figures on black background...")
     
     # Start timing
@@ -160,9 +168,54 @@ def process_video(input_path: str, output_path: str, rotate: bool = True) -> Non
         # Render stick figure on black background
         output_frame = renderer.render_stick_figure(pose_results)
         
-        # Rotate frame if needed
-        if rotate:
-            output_frame = cv2.rotate(output_frame, cv2.ROTATE_90_CLOCKWISE)
+        # Apply motion blur with glow effect if enabled
+        if motion_blur:
+            # Apply Gaussian blur for glow effect
+            blurred_frame = cv2.GaussianBlur(output_frame, (blur_kernel_size, blur_kernel_size), 0)
+            
+            # Rotate blurred frame if rotation is enabled (for buffer consistency)
+            if rotate:
+                blurred_frame_rotated = cv2.rotate(blurred_frame, cv2.ROTATE_90_CLOCKWISE)
+            else:
+                blurred_frame_rotated = blurred_frame
+            
+            # Combine original stick figure with blurred glow
+            # Use float32 for blending to avoid overflow
+            output_frame_temp = output_frame.copy()
+            if rotate:
+                output_frame_temp = cv2.rotate(output_frame_temp, cv2.ROTATE_90_CLOCKWISE)
+            
+            output_frame_float = output_frame_temp.astype(np.float32)
+            blurred_frame_float = blurred_frame_rotated.astype(np.float32)
+            
+            # Blend: 70% original + 30% blurred glow
+            final_frame = output_frame_float * 0.7 + blurred_frame_float * 0.3
+            
+            # Blend with previous frames from buffer for motion trail
+            if len(frame_buffer) > 0:
+                # Opacity values for trail (decreasing: newest to oldest)
+                opacity_values = [0.6, 0.3, 0.15, 0.05]  # For up to 4 frames
+                
+                # Blend previous frames in reverse order (oldest first)
+                for i, prev_frame in enumerate(reversed(frame_buffer)):
+                    if i < len(opacity_values):
+                        opacity = opacity_values[i]
+                        prev_frame_float = prev_frame.astype(np.float32)
+                        final_frame = final_frame + prev_frame_float * opacity
+            
+            # Clip and convert back to uint8
+            final_frame = np.clip(final_frame, 0, 255).astype(np.uint8)
+            
+            # Update frame buffer (add current blurred frame, already rotated if needed)
+            frame_buffer.append(blurred_frame_rotated.copy())
+            if len(frame_buffer) > buffer_size:
+                frame_buffer.pop(0)  # Remove oldest frame
+            
+            output_frame = final_frame
+        else:
+            # Rotate frame if needed (when motion blur is disabled)
+            if rotate:
+                output_frame = cv2.rotate(output_frame, cv2.ROTATE_90_CLOCKWISE)
         
         # Write output frame
         out.write(output_frame)

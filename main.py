@@ -33,13 +33,22 @@ def main():
         help='Disable rotation (rotation is enabled by default)'
     )
     
+    parser.add_argument(
+        '--motion-blur',
+        dest='motion_blur',
+        action='store_true',
+        default=False,
+        help='Enable motion blur with glow effect for stick figures'
+    )
+    
     args = parser.parse_args()
     
     try:
         process_video(
             input_path=args.input,
             output_path=args.output,
-            rotate=args.rotate
+            rotate=args.rotate,
+            motion_blur=args.motion_blur
         )
     except Exception as e:
         print(f"Error processing video: {e}", file=sys.stderr)
