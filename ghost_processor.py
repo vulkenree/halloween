@@ -5,6 +5,7 @@ Core module for person detection and stick figure rendering.
 import cv2
 import numpy as np
 import mediapipe as mp
+import time
 from typing import Optional, Tuple, List
 
 
@@ -313,6 +314,9 @@ def process_stick_figure_to_ghost(
     print(f"Resolution: {width}x{height}, FPS: {fps}, Total frames: {total_frames}")
     print("Creating ghost effects...")
     
+    # Start timing (after video is opened and validated)
+    start_time = time.time()
+    
     frame_count = 0
     
     # Ensure ghost_color is set
@@ -410,31 +414,54 @@ def process_stick_figure_to_ghost(
             progress = (frame_count / total_frames) * 100
             print(f"Progress: {progress:.1f}% ({frame_count}/{total_frames} frames)")
     
+    # End timing (before cleanup)
+    end_time = time.time()
+    processing_time = end_time - start_time
+    
     # Cleanup
     cap.release()
     out.release()
     
+    # Calculate processing metrics
+    fps_processing = total_frames / processing_time if processing_time > 0 else 0
+    
     print(f"Ghost processing complete! Output saved to: {output_path}")
+    print(f"Processing time: {processing_time:.2f} seconds")
+    print(f"Processing speed: {fps_processing:.2f} frames/second")
 
 
-def load_witch_kernel(image_path: str, kernel_size: int = 25) -> Optional[np.ndarray]:
+# Global kernel cache for witch mode optimization
+_witch_kernel_cache: dict = {}
+_witch_base_image: Optional[np.ndarray] = None
+
+
+def load_witch_kernel(image_path: str, kernel_size: int = 25, use_cache: bool = True) -> Optional[np.ndarray]:
     """
     Load witch image as grayscale and prepare as convolution kernel.
+    Uses caching to avoid reloading base image and recomputing kernels.
     
     Args:
         image_path: Path to witch image file
         kernel_size: Size of the convolution kernel (will be resized to this)
+        use_cache: If True, use cached kernels (default: True)
         
     Returns:
         Normalized convolution kernel or None if loading fails
     """
-    # Load as grayscale
-    witch_img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if witch_img is None:
-        return None
+    global _witch_kernel_cache, _witch_base_image
+    
+    # Check cache first
+    if use_cache and kernel_size in _witch_kernel_cache:
+        return _witch_kernel_cache[kernel_size]
+    
+    # Load base image if not cached
+    if _witch_base_image is None:
+        _witch_base_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if _witch_base_image is None:
+            return None
     
     # Resize to kernel size
-    witch_kernel = cv2.resize(witch_img, (kernel_size, kernel_size))
+    witch_kernel = cv2.resize(_witch_base_image, (kernel_size, kernel_size))
     
     # Normalize to avoid brightness blowout
     kernel_sum = witch_kernel.sum()
@@ -443,7 +470,39 @@ def load_witch_kernel(image_path: str, kernel_size: int = 25) -> Optional[np.nda
     else:
         witch_kernel = witch_kernel.astype(np.float32) / (kernel_size * kernel_size)
     
+    # Cache the kernel
+    if use_cache:
+        _witch_kernel_cache[kernel_size] = witch_kernel
+    
     return witch_kernel
+
+
+def get_cached_kernel_size(height_ratio: Optional[float], base_size: int = 25) -> int:
+    """
+    Get kernel size rounded to cacheable values to improve cache hit rate.
+    Rounds to nearest odd size in steps of 5 for better caching.
+    
+    Args:
+        height_ratio: Normalized person height ratio or None
+        base_size: Base kernel size
+        
+    Returns:
+        Cached kernel size (rounded to nearest cacheable size)
+    """
+    if height_ratio is None:
+        height_ratio = 0.5  # Default
+    
+    # Scale based on height
+    kernel_size = int(base_size * (1 + height_ratio * 2))
+    
+    # Round to nearest multiple of 5 for better cache utilization
+    kernel_size = round(kernel_size / 5) * 5
+    
+    # Ensure kernel size is odd (required for convolution)
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    
+    return max(5, kernel_size)  # Minimum size of 5
 
 
 def load_witch_image(image_path: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
@@ -866,8 +925,8 @@ def process_ghost_video(input_path: str, output_path: str) -> None:
     # Initialize renderer and ghost parameters
     renderer = StickFigureRenderer(width, height)
     ghost_color = (200, 200, 255)  # Light blue/white in BGR
-    glow_intensity = 15
-    fill_transparency = 0.3
+    glow_intensity = 60
+    fill_transparency = 0.6
     
     # Initialize video writer (rotated 90° clockwise)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -879,9 +938,13 @@ def process_ghost_video(input_path: str, output_path: str) -> None:
     print(f"Resolution: {width}x{height}, FPS: {fps}, Total frames: {total_frames}")
     print("Creating ghost effects...")
     
+    # Start timing (after video is opened and validated)
+    start_time = time.time()
+    
     frame_count = 0
     poses_detected = 0
-    previous_stick_frame = None  # Frame buffer for trailing effect
+    frame_buffer = []  # Buffer for last 4 frames (Option 3: multiple trailing frames)
+    max_buffer_size = 4
     
     while True:
         ret, frame = cap.read()
@@ -900,67 +963,79 @@ def process_ghost_video(input_path: str, output_path: str) -> None:
         # Rotate stick figure frame (for output orientation)
         stick_frame_rotated = cv2.rotate(stick_frame, cv2.ROTATE_90_CLOCKWISE)
         
-        # Create trailing stick figure from previous frame (80% scale, blurred, glowing)
-        trailing_frame = None
-        if previous_stick_frame is not None:
-            # Scale previous frame's stick figure to 80%
-            prev_rotated = cv2.rotate(previous_stick_frame, cv2.ROTATE_90_CLOCKWISE)
-            h, w = prev_rotated.shape[:2]
-            new_h = int(h * 0.8)
-            new_w = int(w * 0.8)
-            
-            # Resize to 80%
-            trailing_scaled = cv2.resize(prev_rotated, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-            
-            # Center it on the frame (or position it appropriately)
-            trailing_frame = np.zeros((rotated_height, rotated_width, 3), dtype=np.uint8)
-            y_offset = (rotated_height - new_h) // 2
-            x_offset = (rotated_width - new_w) // 2
-            trailing_frame[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = trailing_scaled
+        # Create ghost frame (start with trailing figures)
+        ghost_frame = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
         
-        # Update frame buffer for next iteration
-        previous_stick_frame = stick_frame.copy()
+        # Process trailing stick figures from frame buffer (Option 3: render 4 frames with decreasing opacity)
+        # Optimization: Pre-rotate frames in buffer to avoid repeated rotations
+        if len(frame_buffer) > 0:
+            for i, prev_rotated in enumerate(reversed(frame_buffer)):  # Oldest first, newest last
+                # Calculate opacity: decreasing from 1.0 to 0.25 (oldest = most faded)
+                opacity = 1.0 - (i * 0.75 / max_buffer_size)  # Decrease from 1.0 to 0.25
+                
+                # Optimization: Use smaller blur for older frames (less computation)
+                if i >= 2:  # Oldest 2 frames: single blur pass
+                    blur_passes = 1
+                    blur_intensity_multiplier = 1.5
+                else:  # Newer 2 frames: double blur pass
+                    blur_passes = 2
+                    blur_intensity_multiplier = 2.0
+                
+                # Scale previous frame's stick figure to 80%
+                h, w = prev_rotated.shape[:2]
+                new_h = int(h * 0.8)
+                new_w = int(w * 0.8)
+                
+                # Resize to 80%
+                trailing_scaled = cv2.resize(prev_rotated, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                
+                # Center it on the frame
+                trailing_frame = np.zeros((rotated_height, rotated_width, 3), dtype=np.uint8)
+                y_offset = (rotated_height - new_h) // 2
+                x_offset = (rotated_width - new_w) // 2
+                trailing_frame[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = trailing_scaled
+                
+                # Process trailing figure with effects
+                if trailing_frame is not None:
+                    # Convert trailing frame to grayscale and create mask
+                    trailing_gray = cv2.cvtColor(trailing_frame, cv2.COLOR_BGR2GRAY)
+                    _, trailing_mask = cv2.threshold(trailing_gray, 1, 255, cv2.THRESH_BINARY)
+                    
+                    if np.any(trailing_mask):
+                        # Apply blur with optimized passes based on frame age
+                        trailing_blur_intensity = int(glow_intensity * blur_intensity_multiplier)
+                        trailing_blurred_mask = cv2.GaussianBlur(trailing_mask.astype(np.float32), 
+                                                                (trailing_blur_intensity * 2 + 1, trailing_blur_intensity * 2 + 1), 
+                                                                0) / 255.0
+                        
+                        # Apply additional blur pass only for newer frames
+                        if blur_passes > 1:
+                            trailing_blurred_mask = cv2.GaussianBlur(trailing_blurred_mask, 
+                                                                    (trailing_blur_intensity + 1, trailing_blur_intensity + 1), 
+                                                                    0)
+                        
+                        # Vectorized glow overlay (optimization: no per-channel loop)
+                        trailing_blurred_mask_3d = trailing_blurred_mask[:, :, np.newaxis]
+                        trailing_glow_overlay = trailing_blurred_mask_3d * np.array(ghost_color, dtype=np.float32)
+                        
+                        # Add trailing glow with decreasing opacity
+                        ghost_frame = ghost_frame + trailing_glow_overlay * (0.8 * opacity)
+                        
+                        # Vectorized fill overlay
+                        trailing_fill_mask = trailing_mask.astype(np.float32)[:, :, np.newaxis] / 255.0
+                        trailing_fill_overlay = trailing_fill_mask * np.array(ghost_color, dtype=np.float32) * (fill_transparency * 0.6 * opacity)
+                        ghost_frame = ghost_frame + trailing_fill_overlay
+                        
+                        # Add faded outline for trailing figure with decreasing opacity
+                        trailing_outline = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
+                        trailing_outline[trailing_mask > 0] = [255, 255, 255]
+                        ghost_frame = ghost_frame + trailing_outline * (0.2 * opacity)
         
-        # Create ghost frame (start with trailing figure if available)
-        ghost_frame = np.zeros((rotated_height, rotated_width, 3), dtype=np.uint8)
-        
-        # Process trailing stick figure first (behind main figure)
-        if trailing_frame is not None:
-            # Convert trailing frame to grayscale and create mask
-            trailing_gray = cv2.cvtColor(trailing_frame, cv2.COLOR_BGR2GRAY)
-            _, trailing_mask = cv2.threshold(trailing_gray, 1, 255, cv2.THRESH_BINARY)
-            
-            if np.any(trailing_mask):
-                # Apply heavy blur for trailing effect (2x the main glow intensity)
-                trailing_blur_intensity = glow_intensity * 2
-                trailing_blurred_mask = cv2.GaussianBlur(trailing_mask.astype(np.float32), 
-                                                        (trailing_blur_intensity * 2 + 1, trailing_blur_intensity * 2 + 1), 
-                                                        0) / 255.0
-                
-                # Apply additional blur passes for smoother effect
-                trailing_blurred_mask = cv2.GaussianBlur(trailing_blurred_mask, 
-                                                        (trailing_blur_intensity + 1, trailing_blur_intensity + 1), 
-                                                        0)
-                
-                # Create strong glow overlay for trailing figure
-                trailing_glow_overlay = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
-                for c in range(3):
-                    trailing_glow_overlay[:, :, c] = trailing_blurred_mask * ghost_color[c]
-                
-                # Add trailing glow (stronger than main, more transparent)
-                ghost_frame = ghost_frame.astype(np.float32) + trailing_glow_overlay * 0.8
-                
-                # Add semi-transparent filled trailing ghost
-                trailing_fill_mask = (trailing_mask.astype(np.float32) / 255.0)
-                trailing_fill_overlay = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
-                for c in range(3):
-                    trailing_fill_overlay[:, :, c] = trailing_fill_mask * ghost_color[c] * (fill_transparency * 0.6)
-                ghost_frame = ghost_frame + trailing_fill_overlay
-                
-                # Add faded outline for trailing figure
-                trailing_outline = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
-                trailing_outline[trailing_mask > 0] = [255, 255, 255]
-                ghost_frame = ghost_frame + trailing_outline * 0.2
+        # Update frame buffer with pre-rotated frame (optimization: rotate once, reuse)
+        stick_frame_rotated_for_buffer = cv2.rotate(stick_frame, cv2.ROTATE_90_CLOCKWISE)
+        frame_buffer.append(stick_frame_rotated_for_buffer.copy())
+        if len(frame_buffer) > max_buffer_size:
+            frame_buffer.pop(0)  # Remove oldest frame
         
         # Apply ghost effects to main rotated frame
         gray = cv2.cvtColor(stick_frame_rotated, cv2.COLOR_BGR2GRAY)
@@ -972,19 +1047,16 @@ def process_ghost_video(input_path: str, output_path: str) -> None:
                                           (glow_intensity * 2 + 1, glow_intensity * 2 + 1), 
                                           0) / 255.0
             
-            # Create glow overlay
-            glow_overlay = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
-            for c in range(3):
-                glow_overlay[:, :, c] = blurred_mask * ghost_color[c]
+            # Vectorized glow overlay (optimization: no per-channel loop)
+            blurred_mask_3d = blurred_mask[:, :, np.newaxis]
+            glow_overlay = blurred_mask_3d * np.array(ghost_color, dtype=np.float32)
             
             # Add main ghost glow on top of trailing figure
             ghost_frame = ghost_frame.astype(np.float32) + glow_overlay * 0.6
             
-            # Add filled ghost
-            fill_mask = (mask.astype(np.float32) / 255.0)
-            fill_overlay = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
-            for c in range(3):
-                fill_overlay[:, :, c] = fill_mask * ghost_color[c] * fill_transparency
+            # Vectorized filled ghost (optimization: no per-channel loop)
+            fill_mask_3d = (mask.astype(np.float32) / 255.0)[:, :, np.newaxis]
+            fill_overlay = fill_mask_3d * np.array(ghost_color, dtype=np.float32) * fill_transparency
             ghost_frame = ghost_frame + fill_overlay
             
             # Add outline
@@ -1002,12 +1074,21 @@ def process_ghost_video(input_path: str, output_path: str) -> None:
             progress = (frame_count / total_frames) * 100
             print(f"Progress: {progress:.1f}% ({frame_count}/{total_frames} frames)")
     
+    # End timing (before cleanup)
+    end_time = time.time()
+    processing_time = end_time - start_time
+    
     cap.release()
     out.release()
     pose_detector.close()
     
+    # Calculate processing metrics
+    fps_processing = total_frames / processing_time if processing_time > 0 else 0
+    
     print(f"Ghost processing complete! Output saved to: {output_path}")
     print(f"Total poses detected: {poses_detected} out of {total_frames} frames")
+    print(f"Processing time: {processing_time:.2f} seconds")
+    print(f"Processing speed: {fps_processing:.2f} frames/second")
 
 
 def process_witch_video(input_path: str, output_path: str, witch_image_path: str = "test_videos/stock_witch.jpg") -> None:
@@ -1056,8 +1137,13 @@ def process_witch_video(input_path: str, output_path: str, witch_image_path: str
     print(f"Resolution: {width}x{height}, FPS: {fps}, Total frames: {total_frames}")
     print("Creating witch effects...")
     
+    # Start timing (after video is opened and validated)
+    start_time = time.time()
+    
     frame_count = 0
     poses_detected = 0
+    frame_buffer = []  # Buffer for last 4 frames (Option 3: multiple trailing frames)
+    max_buffer_size = 4
     
     while True:
         ret, frame = cap.read()
@@ -1098,16 +1184,16 @@ def process_witch_video(input_path: str, output_path: str, witch_image_path: str
             person_bottom_y = int(max(left_ankle.y, right_ankle.y) * height)
             person_center_x = int(nose.x * width)
         
-        # Calculate dynamic kernel size based on person height
+        # Calculate dynamic kernel size based on person height (uses caching)
         kernel_size = get_scaled_kernel_size(base_kernel_size, height_ratio)
         
-        # Resize and re-normalize kernel for this frame
-        witch_kernel = load_witch_kernel(witch_image_path, kernel_size)
+        # Load kernel from cache (optimization: cached kernels avoid file I/O and recomputation)
+        witch_kernel = load_witch_kernel(witch_image_path, kernel_size, use_cache=True)
         if witch_kernel is None:
             # Fallback to base kernel if resize fails
             witch_kernel = witch_kernel_base
         
-        # Apply convolution to stick figure
+        # Apply convolution to main stick figure
         output_frame = apply_witch_convolution(stick_frame, witch_kernel)
         
         # Draw accessories based on classification
@@ -1118,20 +1204,111 @@ def process_witch_video(input_path: str, output_path: str, witch_image_path: str
             # Draw broom for adults
             output_frame = draw_broom(output_frame, person_center_x, person_top_y, person_bottom_y, height_ratio or 0.5)
         
-        # Rotate frame 90 degrees clockwise
+        # Rotate main frame 90 degrees clockwise
         rotated_frame = cv2.rotate(output_frame, cv2.ROTATE_90_CLOCKWISE)
         
+        # Create final output with trailing figures behind main figure
+        final_frame = np.zeros((rotated_height, rotated_width, 3), dtype=np.float32)
+        
+        # Process trailing stick figures from frame buffer (Option 3: render 4 frames with decreasing opacity)
+        # Optimization: Pre-rotated frames in buffer avoid repeated rotations
+        if len(frame_buffer) > 0:
+            for i, prev_rotated in enumerate(reversed(frame_buffer)):  # Oldest first, newest last
+                # Calculate opacity: decreasing from 1.0 to 0.25 (oldest = most faded)
+                opacity = 1.0 - (i * 0.75 / max_buffer_size)  # Decrease from 1.0 to 0.25
+                
+                # Optimization: Use smaller blur for older frames (less computation)
+                if i >= 2:  # Oldest 2 frames: single blur pass
+                    blur_passes = 1
+                    trailing_blur_intensity = 25
+                else:  # Newer 2 frames: double blur pass
+                    blur_passes = 2
+                    trailing_blur_intensity = 30
+                
+                # Scale previous frame's stick figure to 80%
+                h, w = prev_rotated.shape[:2]
+                new_h = int(h * 0.8)
+                new_w = int(w * 0.8)
+                
+                # Resize to 80%
+                trailing_scaled = cv2.resize(prev_rotated, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                
+                # Center it on the frame (frame is already rotated, so use rotated dimensions)
+                trailing_frame = np.zeros((rotated_height, rotated_width, 3), dtype=np.uint8)
+                y_offset = (rotated_height - new_h) // 2
+                x_offset = (rotated_width - new_w) // 2
+                trailing_frame[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = trailing_scaled
+                
+                # Un-rotate to apply convolution, then re-rotate
+                trailing_frame_unrotated = cv2.rotate(trailing_frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                trailing_output = apply_witch_convolution(trailing_frame_unrotated, witch_kernel)
+                rotated_trailing = cv2.rotate(trailing_output, cv2.ROTATE_90_CLOCKWISE)
+                
+                # Process trailing figure with blur and glow effects
+                trailing_gray = cv2.cvtColor(rotated_trailing, cv2.COLOR_BGR2GRAY)
+                _, trailing_mask = cv2.threshold(trailing_gray, 1, 255, cv2.THRESH_BINARY)
+                
+                if np.any(trailing_mask):
+                    # Apply blur with optimized passes based on frame age
+                    trailing_blurred_mask = cv2.GaussianBlur(trailing_mask.astype(np.float32), 
+                                                            (trailing_blur_intensity * 2 + 1, trailing_blur_intensity * 2 + 1), 
+                                                            0) / 255.0
+                    
+                    # Apply additional blur pass only for newer frames
+                    if blur_passes > 1:
+                        trailing_blurred_mask = cv2.GaussianBlur(trailing_blurred_mask, 
+                                                                (trailing_blur_intensity + 1, trailing_blur_intensity + 1), 
+                                                                0)
+                    
+                    # Vectorized glow overlay (optimization: no per-channel loop)
+                    witch_glow_color = np.array([0, 165, 255], dtype=np.float32)  # Orange in BGR
+                    trailing_blurred_mask_3d = trailing_blurred_mask[:, :, np.newaxis]
+                    trailing_glow_overlay = trailing_blurred_mask_3d * witch_glow_color
+                    
+                    # Add trailing glow with decreasing opacity
+                    final_frame = final_frame + trailing_glow_overlay * (0.7 * opacity)
+                    
+                    # Vectorized fill overlay
+                    trailing_fill_mask = trailing_mask.astype(np.float32)[:, :, np.newaxis] / 255.0
+                    trailing_fill_overlay = rotated_trailing.astype(np.float32) * trailing_fill_mask * (0.4 * opacity)
+                    final_frame = final_frame + trailing_fill_overlay
+        
+        # Update frame buffer with original stick frame (optimization: pre-rotate for reuse)
+        # Store rotated frame to avoid rotating multiple times
+        stick_frame_rotated_for_buffer = cv2.rotate(stick_frame, cv2.ROTATE_90_CLOCKWISE)
+        frame_buffer.append(stick_frame_rotated_for_buffer.copy())
+        if len(frame_buffer) > max_buffer_size:
+            frame_buffer.pop(0)  # Remove oldest frame
+        
+        # Add main witch figure on top
+        final_frame = final_frame + rotated_frame.astype(np.float32)
+        
+        # Convert to uint8
+        final_frame = np.clip(final_frame, 0, 255).astype(np.uint8)
+        
         # Write output frame
-        out.write(rotated_frame)
+        out.write(final_frame)
+        
+        # Update frame buffer for next iteration
+        previous_stick_frame = stick_frame.copy()
         
         frame_count += 1
         if frame_count % 30 == 0:
             progress = (frame_count / total_frames) * 100
             print(f"Progress: {progress:.1f}% ({frame_count}/{total_frames} frames)")
     
+    # End timing (before cleanup)
+    end_time = time.time()
+    processing_time = end_time - start_time
+    
     cap.release()
     out.release()
     pose_detector.close()
     
+    # Calculate processing metrics
+    fps_processing = total_frames / processing_time if processing_time > 0 else 0
+    
     print(f"Witch processing complete! Output saved to: {output_path}")
     print(f"Total poses detected: {poses_detected} out of {total_frames} frames")
+    print(f"Processing time: {processing_time:.2f} seconds")
+    print(f"Processing speed: {fps_processing:.2f} frames/second")

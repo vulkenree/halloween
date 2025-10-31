@@ -4,7 +4,7 @@ Main entry point for Halloween Ghost Video Processor.
 
 import argparse
 import sys
-from ghost_processor import process_ghost_video, process_witch_video
+from ghost_processor import process_ghost_video, process_witch_video, process_stick_figure_to_ghost
 
 
 def main():
@@ -31,10 +31,22 @@ def main():
         help='Create witch mode (witch head + accessories) instead of ghost mode'
     )
     
+    parser.add_argument(
+        '--stick-to-ghost',
+        action='store_true',
+        help='Process stick figure video to ghost (input must be stick figure video)'
+    )
+    
     args = parser.parse_args()
     
     try:
-        if args.witch:
+        if args.stick_to_ghost:
+            # Stick figure to ghost mode
+            process_stick_figure_to_ghost(
+                input_path=args.input,
+                output_path=args.output
+            )
+        elif args.witch:
             # Witch mode
             process_witch_video(
                 input_path=args.input,
@@ -44,7 +56,7 @@ def main():
             # Ghost mode (default)
             process_ghost_video(
                 input_path=args.input,
-                output_path=args.output
+                output_path=a   rgs.output
             )
     except Exception as e:
         print(f"Error processing video: {e}", file=sys.stderr)
